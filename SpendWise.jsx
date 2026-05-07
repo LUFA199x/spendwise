@@ -442,17 +442,26 @@ function AddModal({ onAdd, onClose, prefill = {} }) {
 
 function AuthScreen({ onAuth }) {
   const isMobile = useIsMobile();
-  const [mode,    setMode]    = useState("login");
-  const [form,    setForm]    = useState({ name: "", email: "", password: "" });
+
+  const urlToken = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("token")
+    : null;
+
+  const [mode,    setMode]    = useState(urlToken ? "reset" : "login");
+  const [form,    setForm]    = useState({ name: "", email: "", password: "", newPassword: "" });
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
+  const [success, setSuccess] = useState("");
+
+  const switchMode = (next) => { setMode(next); setError(""); setSuccess(""); };
 
   const handleSubmit = async () => {
-    if (!form.email || !form.password) return;
     setLoading(true);
     setError("");
+    setSuccess("");
     try {
       if (mode === "register") {
+        if (!form.email || !form.password) return;
         const { data, error: e } = await authClient.signUp.email({
           name:     form.name || form.email.split("@")[0],
           email:    form.email,
@@ -460,13 +469,36 @@ function AuthScreen({ onAuth }) {
         });
         if (e) throw new Error(e.message);
         onAuth(data.user);
-      } else {
+
+      } else if (mode === "login") {
+        if (!form.email || !form.password) return;
         const { data, error: e } = await authClient.signIn.email({
           email:    form.email,
           password: form.password,
         });
         if (e) throw new Error(e.message);
         onAuth(data.user);
+
+      } else if (mode === "forgot") {
+        if (!form.email) return;
+        const { error: e } = await authClient.forgetPassword({
+          email:      form.email,
+          redirectTo: window.location.origin,
+        });
+        if (e) throw new Error(e.message);
+        setSuccess("Check your inbox — a reset link is on its way.");
+
+      } else if (mode === "reset") {
+        if (!form.newPassword) return;
+        const token = new URLSearchParams(window.location.search).get("token");
+        const { error: e } = await authClient.resetPassword({
+          newPassword: form.newPassword,
+          token,
+        });
+        if (e) throw new Error(e.message);
+        window.history.replaceState({}, "", window.location.pathname);
+        setSuccess("Password updated! Sign in with your new password.");
+        switchMode("login");
       }
     } catch (e) {
       setError(e.message ?? "Something went wrong");
@@ -479,11 +511,25 @@ function AuthScreen({ onAuth }) {
       style={s.input}
       placeholder={placeholder}
       type={type}
-      value={form[key]}
+      value={form[key] ?? ""}
       onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
       onKeyDown={e => e.key === "Enter" && handleSubmit()}
     />
   );
+
+  const subtitles = {
+    login:    "Sign in to your account",
+    register: "Create your account",
+    forgot:   "Reset your password",
+    reset:    "Choose a new password",
+  };
+
+  const btnLabels = {
+    login:    "Sign In",
+    register: "Create Account",
+    forgot:   "Send Reset Link",
+    reset:    "Set New Password",
+  };
 
   return (
     <div style={{
@@ -505,18 +551,36 @@ function AuthScreen({ onAuth }) {
           Spend<span style={{ color: C.textSec }}>Wise</span>
         </div>
         <div style={{ fontSize: 13, color: C.textSec, marginBottom: 28 }}>
-          {mode === "login" ? "Sign in to your account" : "Create your account"}
+          {subtitles[mode]}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {mode === "register" && field("Name", "name")}
-          {field("Email", "email", "email")}
-          {field("Password", "password", "password")}
+          {(mode === "login" || mode === "register" || mode === "forgot") && field("Email", "email", "email")}
+          {(mode === "login" || mode === "register") && field("Password", "password", "password")}
+          {mode === "reset" && field("New password", "newPassword", "password")}
         </div>
+
+        {mode === "login" && (
+          <div style={{ textAlign: "right", marginTop: 8 }}>
+            <span
+              style={{ fontSize: 12, color: C.textSec, cursor: "pointer" }}
+              onClick={() => switchMode("forgot")}
+            >
+              Forgot password?
+            </span>
+          </div>
+        )}
 
         {error && (
           <div style={{ marginTop: 12, padding: "10px 14px", background: C.dangerDim, border: `1px solid ${C.danger}40`, borderRadius: 8, fontSize: 13, color: C.danger }}>
             {error}
+          </div>
+        )}
+
+        {success && (
+          <div style={{ marginTop: 12, padding: "10px 14px", background: "#052e16", border: "1px solid #16a34a40", borderRadius: 8, fontSize: 13, color: "#4ade80" }}>
+            {success}
           </div>
         )}
 
@@ -525,17 +589,32 @@ function AuthScreen({ onAuth }) {
           onClick={handleSubmit}
           disabled={loading}
         >
-          {loading ? "Please wait…" : mode === "login" ? "Sign In" : "Create Account"}
+          {loading ? "Please wait…" : btnLabels[mode]}
         </button>
 
         <div style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: C.textSec }}>
-          {mode === "login" ? "No account? " : "Have an account? "}
-          <span
-            style={{ color: C.white, cursor: "pointer", fontWeight: 600 }}
-            onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); }}
-          >
-            {mode === "login" ? "Sign up" : "Sign in"}
-          </span>
+          {(mode === "login" || mode === "forgot") && (
+            <>
+              {mode === "login" ? "No account? " : "Remembered it? "}
+              <span
+                style={{ color: C.white, cursor: "pointer", fontWeight: 600 }}
+                onClick={() => switchMode(mode === "login" ? "register" : "login")}
+              >
+                {mode === "login" ? "Sign up" : "Sign in"}
+              </span>
+            </>
+          )}
+          {mode === "register" && (
+            <>
+              Have an account?{" "}
+              <span
+                style={{ color: C.white, cursor: "pointer", fontWeight: 600 }}
+                onClick={() => switchMode("login")}
+              >
+                Sign in
+              </span>
+            </>
+          )}
         </div>
       </div>
     </div>
