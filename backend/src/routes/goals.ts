@@ -10,8 +10,8 @@ router.use(requireAuth);
 router.get("/", async (c) => {
   const userId = c.get("userId");
   const key = `goals:${userId}`;
-  const cached = await redis.get(key).catch(() => null);
-  if (cached) return c.json(JSON.parse(cached));
+  const cached = await redis?.get<any[]>(key).catch(() => null) ?? null;
+  if (cached) return c.json(cached);
 
   const { data, error } = await supabase
     .from("goals")
@@ -20,7 +20,7 @@ router.get("/", async (c) => {
     .order("createdAt", { ascending: true });
   if (error) return c.json({ error: error.message }, 500);
 
-  await redis.set(key, JSON.stringify(data), "EX", 60).catch(() => {});
+  await redis?.set(key, data, { ex: 60 }).catch(() => {});
   return c.json(data);
 });
 
@@ -33,7 +33,7 @@ router.post("/", async (c) => {
     .select()
     .single();
   if (error) return c.json({ error: error.message }, 500);
-  await redis.del(`goals:${userId}`).catch(() => {});
+  await redis?.del(`goals:${userId}`).catch(() => {});
   return c.json(data, 201);
 });
 
@@ -48,7 +48,7 @@ router.put("/:id", async (c) => {
     .select()
     .single();
   if (error) return c.json({ error: error.message }, 500);
-  await redis.del(`goals:${userId}`).catch(() => {});
+  await redis?.del(`goals:${userId}`).catch(() => {});
   return c.json(data);
 });
 
@@ -60,7 +60,7 @@ router.delete("/:id", async (c) => {
     .eq("id", c.req.param("id"))
     .eq("userId", userId);
   if (error) return c.json({ error: error.message }, 500);
-  await redis.del(`goals:${userId}`).catch(() => {});
+  await redis?.del(`goals:${userId}`).catch(() => {});
   return c.json({ success: true });
 });
 

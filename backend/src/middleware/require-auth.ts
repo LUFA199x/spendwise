@@ -13,7 +13,7 @@ export const requireAuth = createMiddleware<{ Variables: AuthVars }>(
       c.req.raw.headers.get("cookie") ?? "";
 
     const cacheKey = `session:${sessionToken}`;
-    const cached = await redis.get(cacheKey).catch(() => null);
+    const cached = await redis?.get<string>(cacheKey).catch(() => null) ?? null;
 
     if (cached) {
       c.set("userId", cached);
@@ -23,7 +23,7 @@ export const requireAuth = createMiddleware<{ Variables: AuthVars }>(
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    await redis.set(cacheKey, session.user.id, "EX", SESSION_TTL).catch(() => {});
+    await redis?.set(cacheKey, session.user.id, { ex: SESSION_TTL }).catch(() => {});
     c.set("userId", session.user.id);
     await next();
   }

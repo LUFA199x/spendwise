@@ -10,8 +10,8 @@ router.use(requireAuth);
 router.get("/", async (c) => {
   const userId = c.get("userId");
   const key = `earnings:${userId}`;
-  const cached = await redis.get(key).catch(() => null);
-  if (cached) return c.json(JSON.parse(cached));
+  const cached = await redis?.get<any[]>(key).catch(() => null) ?? null;
+  if (cached) return c.json(cached);
 
   const { data, error } = await supabase
     .from("earnings")
@@ -20,7 +20,7 @@ router.get("/", async (c) => {
     .order("date", { ascending: false });
   if (error) return c.json({ error: error.message }, 500);
 
-  await redis.set(key, JSON.stringify(data), "EX", 60).catch(() => {});
+  await redis?.set(key, data, { ex: 60 }).catch(() => {});
   return c.json(data);
 });
 
@@ -33,7 +33,7 @@ router.post("/", async (c) => {
     .select()
     .single();
   if (error) return c.json({ error: error.message }, 500);
-  await redis.del(`earnings:${userId}`).catch(() => {});
+  await redis?.del(`earnings:${userId}`).catch(() => {});
   return c.json(data, 201);
 });
 
@@ -45,7 +45,7 @@ router.delete("/:id", async (c) => {
     .eq("id", c.req.param("id"))
     .eq("userId", userId);
   if (error) return c.json({ error: error.message }, 500);
-  await redis.del(`earnings:${userId}`).catch(() => {});
+  await redis?.del(`earnings:${userId}`).catch(() => {});
   return c.json({ success: true });
 });
 

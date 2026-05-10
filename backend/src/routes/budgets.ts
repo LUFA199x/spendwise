@@ -10,8 +10,8 @@ router.use(requireAuth);
 router.get("/", async (c) => {
   const userId = c.get("userId");
   const key = `budgets:${userId}`;
-  const cached = await redis.get(key).catch(() => null);
-  if (cached) return c.json(JSON.parse(cached));
+  const cached = await redis?.get<any[]>(key).catch(() => null) ?? null;
+  if (cached) return c.json(cached);
 
   const { data, error } = await supabase
     .from("budgets")
@@ -19,7 +19,7 @@ router.get("/", async (c) => {
     .eq("userId", userId);
   if (error) return c.json({ error: error.message }, 500);
 
-  await redis.set(key, JSON.stringify(data), "EX", 60).catch(() => {});
+  await redis?.set(key, data, { ex: 60 }).catch(() => {});
   return c.json(data);
 });
 
@@ -32,7 +32,7 @@ router.post("/", async (c) => {
     .select("category, limit")
     .single();
   if (error) return c.json({ error: error.message }, 500);
-  await redis.del(`budgets:${userId}`).catch(() => {});
+  await redis?.del(`budgets:${userId}`).catch(() => {});
   return c.json(data, 201);
 });
 
@@ -44,7 +44,7 @@ router.delete("/:category", async (c) => {
     .eq("userId", userId)
     .eq("category", decodeURIComponent(c.req.param("category")));
   if (error) return c.json({ error: error.message }, 500);
-  await redis.del(`budgets:${userId}`).catch(() => {});
+  await redis?.del(`budgets:${userId}`).catch(() => {});
   return c.json({ success: true });
 });
 

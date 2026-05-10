@@ -15,10 +15,10 @@ router.post("/", async (c) => {
   const userId = c.get("userId");
   const ratKey = `claude:rate:${userId}`;
 
-  const count = await redis.incr(ratKey).catch(() => null);
-  if (count === 1) await redis.expire(ratKey, RATE_WINDOW).catch(() => {});
+  const count = await redis?.incr(ratKey).catch(() => null) ?? null;
+  if (count === 1) await redis?.expire(ratKey, RATE_WINDOW).catch(() => {});
   if (count !== null && count > RATE_LIMIT) {
-    const ttl = await redis.ttl(ratKey).catch(() => RATE_WINDOW);
+    const ttl = await redis?.ttl(ratKey).catch(() => RATE_WINDOW) ?? RATE_WINDOW;
     return c.json({ error: "Rate limit exceeded. Try again shortly." }, 429, {
       "Retry-After": String(ttl),
     });

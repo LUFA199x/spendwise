@@ -1,8 +1,11 @@
-import Redis from "ioredis";
+import { Redis } from "@upstash/redis";
 
-export const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
-  lazyConnect: true,
-  maxRetriesPerRequest: 1,
-});
-
-redis.on("error", (err) => console.error("[Redis]", err.message));
+// null when env vars are absent — every call site uses optional chaining
+// so the app runs normally without Redis (caching is simply skipped).
+export const redis =
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+    ? new Redis({
+        url:   process.env.UPSTASH_REDIS_REST_URL,
+        token: process.env.UPSTASH_REDIS_REST_TOKEN,
+      })
+    : null;
