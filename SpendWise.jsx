@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api, authClient } from "./src/api.js";
+import { cache } from "./src/cache.js";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -2108,6 +2109,11 @@ export default function SpendWise() {
       setEarnings(earns ?? []);
       setBudgets(budgs ?? []);
       setGoals(gls ?? []);
+      // seed sessionStorage so subsequent calls are instant
+      cache.set("transactions", txns ?? []);
+      cache.set("earnings",     earns ?? []);
+      cache.set("budgets",      budgs ?? []);
+      cache.set("goals",        gls ?? []);
     } catch (e) {
       console.error("Failed to load data:", e);
     }
@@ -2125,7 +2131,13 @@ export default function SpendWise() {
   const handleAuth = async (u) => { setUser(u); await loadData(); };
 
   const handleSignOut = async () => {
-    await authClient.signOut();
+    await Promise.all([
+      authClient.signOut(),
+      fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:3000"}/api/auth/cache`, {
+        method: "DELETE", credentials: "include",
+      }).catch(() => {}),
+    ]);
+    cache.clear();
     setUser(null);
     setTransactions([]); setEarnings([]); setBudgets([]); setGoals([]);
   };

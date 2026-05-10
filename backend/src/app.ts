@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { auth } from "./auth.js";
+import { redis } from "./redis.js";
 import transactionsRouter from "./routes/transactions.js";
 import earningsRouter from "./routes/earnings.js";
 import budgetsRouter from "./routes/budgets.js";
@@ -35,5 +36,14 @@ app.route("/api/goals", goalsRouter);
 app.route("/api/claude", claudeRouter);
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// Invalidate Redis session cache on signout
+app.delete("/api/auth/cache", async (c) => {
+  const token =
+    c.req.header("Authorization")?.replace("Bearer ", "") ??
+    c.req.raw.headers.get("cookie") ?? "";
+  if (token) await redis?.del(`session:${token}`).catch(() => {});
+  return c.json({ ok: true });
+});
 
 export default app;
