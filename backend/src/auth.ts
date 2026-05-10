@@ -1,12 +1,16 @@
 import { betterAuth } from "better-auth";
 import pg from "pg";
-import { Resend } from "resend";
+import nodemailer from "nodemailer";
 
 const { Pool } = pg;
 
-const resend = process.env.RESEND_API_KEY
-  ? new Resend(process.env.RESEND_API_KEY)
-  : null;
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD,
+  },
+});
 
 export const auth = betterAuth({
   database: new Pool({
@@ -16,9 +20,9 @@ export const auth = betterAuth({
     enabled: true,
     requireEmailVerification: false,
     sendResetPassword: async ({ user, url }) => {
-      if (resend) {
-        await resend.emails.send({
-          from:    process.env.FROM_EMAIL ?? "SpendWise <onboarding@resend.dev>",
+      if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
+        await transporter.sendMail({
+          from:    `"SpendWise" <${process.env.GMAIL_USER}>`,
           to:      user.email,
           subject: "Reset your SpendWise password",
           html: `
@@ -33,7 +37,6 @@ export const auth = betterAuth({
           `,
         });
       } else {
-        // No email provider configured — log URL for local development
         console.log(`[DEV] Password reset URL for ${user.email}:\n${url}`);
       }
     },
