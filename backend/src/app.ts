@@ -37,23 +37,6 @@ app.route("/api/claude", claudeRouter);
 
 app.get("/health", (c) => c.json({ ok: true }));
 
-app.get("/db-ping", async (c) => {
-  const pg = await import("pg");
-  const client = new pg.default.Client({
-    connectionString: process.env.DATABASE_URL,
-    connectionTimeoutMillis: 8000,
-    ssl: { rejectUnauthorized: false },
-  });
-  try {
-    await client.connect();
-    const { rows } = await client.query("SELECT 1 AS ok");
-    await client.end();
-    return c.json({ db: "ok", row: rows[0] });
-  } catch (e: any) {
-    return c.json({ db: "error", message: e.message }, 500);
-  }
-});
-
 // Invalidate Redis session cache on signout
 app.delete("/api/auth/cache", async (c) => {
   const token =
