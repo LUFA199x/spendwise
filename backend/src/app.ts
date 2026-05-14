@@ -39,9 +39,12 @@ app.get("/health", (c) => c.json({ ok: true }));
 
 // Invalidate Redis session cache on signout
 app.delete("/api/auth/cache", async (c) => {
+  const authHeader = c.req.header("Authorization")?.replace("Bearer ", "");
+  const cookieHeader = c.req.raw.headers.get("cookie") ?? "";
   const token =
-    c.req.header("Authorization")?.replace("Bearer ", "") ??
-    c.req.raw.headers.get("cookie") ?? "";
+    authHeader ??
+    cookieHeader.split(";").map(s => s.trim()).find(s => s.startsWith("better-auth.session_token="))?.split("=")[1] ??
+    cookieHeader;
   if (token) await redis?.del(`session:${token}`).catch(() => {});
   return c.json({ ok: true });
 });

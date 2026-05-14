@@ -8,9 +8,12 @@ const SESSION_TTL = 300; // 5 minutes
 
 export const requireAuth = createMiddleware<{ Variables: AuthVars }>(
   async (c, next) => {
+    const authHeader = c.req.header("Authorization")?.replace("Bearer ", "");
+    const cookieHeader = c.req.raw.headers.get("cookie") ?? "";
     const sessionToken =
-      c.req.header("Authorization")?.replace("Bearer ", "") ??
-      c.req.raw.headers.get("cookie") ?? "";
+      authHeader ??
+      cookieHeader.split(";").map(s => s.trim()).find(s => s.startsWith("better-auth.session_token="))?.split("=")[1] ??
+      cookieHeader;
 
     const cacheKey = `session:${sessionToken}`;
     const cached = await redis?.get<string>(cacheKey).catch(() => null) ?? null;
