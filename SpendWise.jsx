@@ -2098,6 +2098,8 @@ export default function SpendWise() {
   const [loaded,       setLoaded]       = useState(false);
 
   const loadData = async () => {
+    // always fetch fresh from DB — clear any sessionStorage hits first
+    ["transactions", "earnings", "budgets", "goals"].forEach(k => cache.del(k));
     try {
       const [txns, earns, budgs, gls] = await Promise.all([
         api.transactions.list(),
@@ -2109,11 +2111,6 @@ export default function SpendWise() {
       setEarnings(earns ?? []);
       setBudgets(budgs ?? []);
       setGoals(gls ?? []);
-      // seed sessionStorage so subsequent calls are instant
-      cache.set("transactions", txns ?? []);
-      cache.set("earnings",     earns ?? []);
-      cache.set("budgets",      budgs ?? []);
-      cache.set("goals",        gls ?? []);
     } catch (e) {
       console.error("Failed to load data:", e);
     }
@@ -2163,13 +2160,27 @@ export default function SpendWise() {
   };
 
   // ── Budget actions ───────────────────────────────────────────────
-  const setBudgetLimit = (category) => {
-    setBudgets(p => [...p, { category, limit: 2000000 }]);
-    api.budgets.upsert({ category, limit: 2000000 }).catch(console.error);
+  const setBudgetLimit = async (category) => {
+    const defaultLimit = 2000000;
+    setBudgets(p => [...p, { category, limit: defaultLimit }]);
+    try {
+      const saved = await api.budgets.upsert({ category, limit: defaultLimit });
+      if (saved) setBudgets(p => p.map(b => b.category === category ? { ...b, ...saved } : b));
+    } catch (e) {
+      console.error("Failed to save budget:", e);
+      setBudgets(p => p.filter(b => b.category !== category));
+    }
   };
-  const updateBudgetLimit = (category, limit) => {
+  const updateBudgetLimit = async (category, limit) => {
+    const prev = budgets.find(b => b.category === category);
     setBudgets(p => p.map(b => b.category === category ? { ...b, limit } : b));
-    api.budgets.upsert({ category, limit }).catch(console.error);
+    try {
+      const saved = await api.budgets.upsert({ category, limit });
+      if (saved) setBudgets(p => p.map(b => b.category === category ? { ...b, ...saved } : b));
+    } catch (e) {
+      console.error("Failed to update budget:", e);
+      if (prev) setBudgets(p => p.map(b => b.category === category ? prev : b));
+    }
   };
 
   // ── Goal actions ─────────────────────────────────────────────────
