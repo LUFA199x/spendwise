@@ -61,6 +61,15 @@ const fmtMoney = n  => "₦" + Math.round(n).toLocaleString();
 const fmtDate  = d  => new Date(d).toLocaleDateString("en-NG", { month: "short", day: "numeric" });
 const fmtMonth = (y, m) => new Date(y, m - 1).toLocaleDateString("en-NG", { month: "long", year: "numeric" });
 const todayStr = () => new Date().toISOString().slice(0, 10);
+const timeAgo  = ts => {
+  if (!ts) return "";
+  const s = Math.floor((Date.now() - new Date(ts)) / 1000);
+  if (s < 60)    return "just now";
+  if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 604800) return `${Math.floor(s / 86400)}d ago`;
+  return fmtDate(ts);
+};
 
 const getMonthYear = dateStr => {
   const d = new Date(dateStr);
@@ -2096,6 +2105,9 @@ export default function SpendWise() {
   const [goals,        setGoals]        = useState([]);
   const [user,         setUser]         = useState(null);
   const [loaded,       setLoaded]       = useState(false);
+  const [lastActivity, setLastActivity] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("sw:lastActivity")) ?? null; } catch { return null; }
+  });
 
   const loadData = async () => {
     // always fetch fresh from DB — clear any sessionStorage hits first
@@ -2139,24 +2151,34 @@ export default function SpendWise() {
     setTransactions([]); setEarnings([]); setBudgets([]); setGoals([]);
   };
 
+  const recordActivity = (label) => {
+    const entry = { label, ts: new Date().toISOString() };
+    setLastActivity(entry);
+    try { localStorage.setItem("sw:lastActivity", JSON.stringify(entry)); } catch {}
+  };
+
   // ── Transaction actions ──────────────────────────────────────────
   const addTransaction = (txn) => {
     setTransactions(p => [txn, ...p]);
     api.transactions.create(txn).catch(console.error);
+    recordActivity("Transaction added");
   };
   const deleteTransaction = (id) => {
     setTransactions(p => p.filter(t => t.id !== id));
     api.transactions.delete(id).catch(console.error);
+    recordActivity("Transaction deleted");
   };
 
   // ── Earning actions ──────────────────────────────────────────────
   const addEarning = (entry) => {
     setEarnings(p => [entry, ...p].sort((a, b) => new Date(b.date) - new Date(a.date)));
     api.earnings.create(entry).catch(console.error);
+    recordActivity("Income recorded");
   };
   const deleteEarning = (id) => {
     setEarnings(p => p.filter(e => e.id !== id));
     api.earnings.delete(id).catch(console.error);
+    recordActivity("Income deleted");
   };
 
   // ── Budget actions ───────────────────────────────────────────────
@@ -2166,6 +2188,7 @@ export default function SpendWise() {
     try {
       const saved = await api.budgets.upsert({ category, limit: defaultLimit });
       if (saved) setBudgets(p => p.map(b => b.category === category ? { ...b, ...saved } : b));
+      recordActivity(`Budget set · ${category}`);
     } catch (e) {
       console.error("Failed to save budget:", e);
       setBudgets(p => p.filter(b => b.category !== category));
@@ -2177,6 +2200,7 @@ export default function SpendWise() {
     try {
       const saved = await api.budgets.upsert({ category, limit });
       if (saved) setBudgets(p => p.map(b => b.category === category ? { ...b, ...saved } : b));
+      recordActivity(`Budget updated · ${category}`);
     } catch (e) {
       console.error("Failed to update budget:", e);
       if (prev) setBudgets(p => p.map(b => b.category === category ? prev : b));
@@ -2187,14 +2211,17 @@ export default function SpendWise() {
   const addGoal = (goal) => {
     setGoals(p => [...p, goal]);
     api.goals.create(goal).catch(console.error);
+    recordActivity("Goal created");
   };
   const deleteGoal = (id) => {
     setGoals(p => p.filter(g => g.id !== id));
     api.goals.delete(id).catch(console.error);
+    recordActivity("Goal deleted");
   };
   const updateGoal = (id, updates) => {
     setGoals(p => p.map(g => g.id === id ? { ...g, ...updates } : g));
     api.goals.update(id, updates).catch(console.error);
+    recordActivity("Goal updated");
   };
 
   // Over-budget count for sidebar badge
@@ -2262,6 +2289,15 @@ export default function SpendWise() {
               </button>
             </div>
           </div>
+
+          {/* Last activity strip (mobile) */}
+          {lastActivity && (
+            <div style={{ flexShrink: 0, padding: "5px 20px", background: C.surface, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 10, color: C.textTert, textTransform: "uppercase", letterSpacing: "0.05em" }}>Last activity</span>
+              <span style={{ fontSize: 11, color: C.textSec, fontWeight: 500 }}>{lastActivity.label}</span>
+              <span style={{ fontSize: 10, color: C.textTert, marginLeft: "auto" }}>{timeAgo(lastActivity.ts)}</span>
+            </div>
+          )}
 
           {/* Scrollable content */}
           <div style={{ flex: 1, overflow: "auto", padding: "20px 16px 90px" }}>
@@ -2352,6 +2388,13 @@ export default function SpendWise() {
               <div style={{ fontSize: 12, color: C.textSec, marginTop: 2 }}>
                 {transactions.length} transactions · {earnings.length} income entries
               </div>
+              {lastActivity && (
+                <div style={{ marginTop: 8, padding: "7px 10px", background: C.whiteDim2, border: `1px solid ${C.border}`, borderRadius: 6 }}>
+                  <div style={{ fontSize: 10, color: C.textTert, marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.05em" }}>Last activity</div>
+                  <div style={{ fontSize: 11, color: C.textSec, fontWeight: 500 }}>{lastActivity.label}</div>
+                  <div style={{ fontSize: 10, color: C.textTert, marginTop: 1 }}>{timeAgo(lastActivity.ts)}</div>
+                </div>
+              )}
               <button
                 onClick={handleSignOut}
                 style={{ ...s.btn("ghost"), width: "100%", marginTop: 10, fontSize: 12, padding: "7px 12px" }}
