@@ -15,6 +15,9 @@ const transporter = nodemailer.createTransport({
 export const auth = betterAuth({
   database: new Pool({
     connectionString: process.env.DATABASE_URL,
+    connectionTimeoutMillis: 10000,
+    idleTimeoutMillis: 30000,
+    max: 3,
   }),
   emailAndPassword: {
     enabled: true,
