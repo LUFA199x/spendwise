@@ -20,6 +20,15 @@ export const auth = betterAuth({
     max: 3,
     ssl: { rejectUnauthorized: false },
   }),
+  advanced: {
+    useSecureCookies: true,
+    disableCSRFCheck: true,
+    defaultCookieAttributes: {
+      sameSite: "none",
+      secure: true,
+      httpOnly: true,
+    },
+  },
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: false,
