@@ -650,11 +650,20 @@ function Scanner({ onAdd }) {
   // Cleanup camera on unmount
   useEffect(() => () => { if (camStream) camStream.getTracks().forEach(t => t.stop()); }, [camStream]);
 
+  // Set srcObject after the video element renders — can't do it synchronously
+  // in startCam because the <video> is conditionally rendered and doesn't exist yet
+  useEffect(() => {
+    if (camStream && videoRef.current) {
+      videoRef.current.srcObject = camStream;
+    }
+  }, [camStream]);
+
   const startCam = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+      });
       setCamStream(stream);
-      if (videoRef.current) videoRef.current.srcObject = stream;
     } catch {
       alert("Camera access denied. Please allow camera permissions and try again.");
     }
@@ -764,54 +773,59 @@ function Scanner({ onAdd }) {
         ))}
       </div>
 
-      {/* Receipt upload */}
-      {mode === "invoice" && (
+      {/* ── No-camera idle state ── */}
+      {!camStream && (
         <div style={{ ...s.card, marginBottom: 20 }}>
-          <div style={s.h3}>Upload Receipt or Invoice Image</div>
-          <div
-            onClick={() => fileRef.current?.click()}
-            style={{ border: `1px dashed ${C.borderMed}`, borderRadius: 10, padding: "44px 20px", textAlign: "center", cursor: "pointer" }}
-          >
-            <div style={{ fontSize: 40, marginBottom: 10 }}>📄</div>
-            <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 600, marginBottom: 6 }}>
-              Drop invoice or receipt here
-            </div>
-            <div style={{ fontSize: 13, color: C.textSec, marginBottom: 18 }}>
-              JPG or PNG — Claude extracts every line item automatically
-            </div>
-            <button style={s.btn("outline")} onClick={e => { e.stopPropagation(); fileRef.current?.click(); }}>
-              Choose File
-            </button>
-          </div>
+          {mode === "invoice" ? (
+            <>
+              <div style={s.h3}>Receipt / Invoice</div>
+              <div
+                onClick={() => fileRef.current?.click()}
+                style={{ border: `1px dashed ${C.borderMed}`, borderRadius: 10, padding: "32px 20px", textAlign: "center", cursor: "pointer", marginBottom: 14 }}
+              >
+                <div style={{ fontSize: 36, marginBottom: 8 }}>📄</div>
+                <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                  Drop receipt image here or choose a file
+                </div>
+                <div style={{ fontSize: 12, color: C.textSec }}>JPG / PNG — Claude extracts every line item</div>
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button style={{ ...s.btn("primary"), flex: 1 }} onClick={startCam}>📷  Use Camera</button>
+                <button style={{ ...s.btn("outline"), flex: 1 }} onClick={e => { e.stopPropagation(); fileRef.current?.click(); }}>Choose File</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ textAlign: "center", padding: "32px 20px" }}>
+                <div style={{ fontSize: 36, marginBottom: 8 }}>▣</div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Point camera at a product barcode</div>
+                <div style={{ fontSize: 12, color: C.textSec, marginBottom: 18 }}>Claude identifies the product and pre-fills the expense form</div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+                  <button style={s.btn("primary")} onClick={startCam}>Open Camera</button>
+                  <button style={s.btn("ghost")}   onClick={() => fileRef.current?.click()}>Upload Image</button>
+                </div>
+              </div>
+            </>
+          )}
           <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
         </div>
       )}
 
-      {/* Barcode — no camera yet */}
-      {mode === "barcode" && !camStream && (
-        <div style={{ ...s.card, marginBottom: 20, textAlign: "center", padding: "44px 20px" }}>
-          <div style={{ fontSize: 40, marginBottom: 10 }}>▣</div>
-          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Point camera at a product barcode</div>
-          <div style={{ fontSize: 13, color: C.textSec, marginBottom: 20 }}>
-            Claude identifies the product and pre-fills the expense form
-          </div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-            <button style={s.btn("primary")} onClick={startCam}>Open Camera</button>
-            <button style={s.btn("ghost")}   onClick={() => fileRef.current?.click()}>Upload Image</button>
-          </div>
-          <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
-        </div>
-      )}
-
-      {/* Barcode — live camera */}
-      {mode === "barcode" && camStream && (
+      {/* ── Live camera view (both modes) ── */}
+      {camStream && (
         <div style={{ ...s.card, marginBottom: 20 }}>
-          <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8, background: "#000", display: "block" }} />
+          <div style={{ fontSize: 12, color: C.textSec, marginBottom: 10, fontWeight: 500 }}>
+            {mode === "invoice" ? "📄 Position the receipt in frame, then capture" : "▣ Point at the barcode, then capture"}
+          </div>
+          <div style={{ position: "relative", borderRadius: 10, overflow: "hidden", background: "#000" }}>
+            <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", display: "block", maxHeight: 460, objectFit: "cover" }} />
+            <div style={{ position: "absolute", inset: 0, border: `2px solid ${C.borderHi}`, borderRadius: 10, pointerEvents: "none" }} />
+          </div>
           <canvas ref={canvasRef} style={{ display: "none" }} />
-          <div style={{ height: 2, background: `linear-gradient(90deg,transparent,${C.white},transparent)`, animation: "scan 2s ease-in-out infinite", margin: "8px 0" }} />
+          <div style={{ height: 2, background: `linear-gradient(90deg,transparent,${C.white},transparent)`, animation: "scan 2s ease-in-out infinite", margin: "10px 0" }} />
           <div style={{ display: "flex", gap: 10 }}>
             <button style={{ ...s.btn("ghost"),   flex: 1 }} onClick={() => { stopCam(); setResult(null); }}>Cancel</button>
-            <button style={{ ...s.btn("primary"), flex: 2 }} onClick={capture}>Capture & Identify</button>
+            <button style={{ ...s.btn("primary"), flex: 2 }} onClick={capture}>📷  Capture & Analyse</button>
           </div>
         </div>
       )}
