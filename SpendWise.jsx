@@ -778,8 +778,7 @@ Rules:
       const clean = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
       const parsed = JSON.parse(clean);
 
-      // Guarantee at least one item so the UI always has something to add.
-      // Also fix zero-amount items by falling back to total / item count.
+      // Normalise invoice data
       if (scanMode === "invoice") {
         if (!parsed.items || parsed.items.length === 0) {
           parsed.items = [{
@@ -788,9 +787,24 @@ Rules:
             category:    "Other",
           }];
         }
-        // If total is still 0 but items have amounts, derive it
         if (!parsed.total || parsed.total === 0) {
           parsed.total = parsed.items.reduce((s, it) => s + (it.amount || 0), 0);
+        }
+
+        // Auto-add the total as a single transaction — same as a manual scan
+        if (parsed.total > 0) {
+          const date     = parsed.date || todayStr();
+          const { month, year } = getMonthYear(date);
+          const category = parsed.items[0]?.category || "Other";
+          onAdd({
+            id:          genId(),
+            description: parsed.merchant ? `${parsed.merchant} purchase` : "Receipt purchase",
+            amount:      parsed.total,
+            category,
+            date, month, year,
+            type: ESSENTIAL_CATS.includes(category) ? "essential" : "discretionary",
+          });
+          parsed._autoAdded = true;
         }
       }
 
@@ -972,99 +986,91 @@ Rules:
         </div>
       )}
 
-      {/* ── Results — invoice ── */}
-      {result && !result.error && result.scanMode === "invoice" && (
+      {/* ── Results — invoice (auto-added) ── */}
+      {result && !result.error && result.scanMode === "invoice" && result._autoAdded && (
         <div>
-          {/* Captured image thumbnail */}
           {capturedUrl && (
             <div style={{ position: "relative", marginBottom: 12, borderRadius: 10, overflow: "hidden" }}>
               <img
                 src={capturedUrl}
                 alt="Scanned receipt"
-                style={{ width: "100%", display: "block", maxHeight: 220, objectFit: "contain", background: "#000" }}
+                style={{ width: "100%", display: "block", maxHeight: 200, objectFit: "contain", background: "#000", opacity: 0.7 }}
               />
-              <div style={{
-                position: "absolute", top: 10, left: 10,
-                background: "rgba(0,0,0,0.82)", border: `1px solid ${C.borderMed}`,
-                borderRadius: 6, padding: "4px 10px", fontSize: 11, color: C.white, fontWeight: 600,
-              }}>
-                ✓ Values detected
-              </div>
             </div>
           )}
-
-          <div style={{ ...s.card, marginBottom: 8 }}>
-            {/* Header: merchant + date */}
-            <div style={{ ...s.sb, marginBottom: 4 }}>
-              <div style={s.h3}>{result.merchant || "Receipt"}</div>
-              {result.date && <div style={{ fontSize: 11, color: C.textSec }}>{fmtDate(result.date)}</div>}
+          <div style={{ ...s.card }}>
+            {/* Success header */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: "50%",
+                border: `2px solid ${C.white}`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 16, flexShrink: 0,
+              }}>✓</div>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>Added to Transactions</div>
+                <div style={{ fontSize: 12, color: C.textSec, marginTop: 1 }}>{result.merchant || "Receipt"} · {result.date ? fmtDate(result.date) : "Today"}</div>
+              </div>
             </div>
 
-            {/* Total debit — hero display */}
+            {/* Amount */}
             <div style={{
               background: C.whiteDim, border: `1px solid ${C.border}`,
               borderRadius: 10, padding: "14px 16px", marginBottom: 16,
-              display: "flex", alignItems: "center", justifyContent: "space-between",
             }}>
-              <div>
-                <div style={{ fontSize: 10, color: C.textTert, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>Total debit</div>
-                <div style={{ ...s.mono, fontSize: 26, fontWeight: 800, letterSpacing: "-0.5px" }}>
-                  {fmtMoney((result.total || 0) / 100)}
-                </div>
+              <div style={{ fontSize: 10, color: C.textTert, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Total debit recorded</div>
+              <div style={{ ...s.mono, fontSize: 28, fontWeight: 800, letterSpacing: "-0.5px" }}>
+                {fmtMoney((result.total || 0) / 100)}
               </div>
-              {/* One-tap: add entire receipt as a single transaction */}
-              <button
-                style={{ ...s.btn("primary"), fontSize: 12, padding: "8px 14px", whiteSpace: "nowrap" }}
-                onClick={() => openAddForItem({
-                  description: result.merchant ? `${result.merchant} purchase` : "Receipt purchase",
-                  amount:      result.total || 0,
-                  category:    result.items?.[0]?.category || "Other",
-                })}
-              >
-                + Add Total
-              </button>
+              <div style={{ fontSize: 11, color: C.textSec, marginTop: 4 }}>
+                {result.items?.[0]?.category || "Other"} · {ESSENTIAL_CATS.includes(result.items?.[0]?.category) ? "Essential" : "Discretionary"}
+              </div>
             </div>
 
-            {/* Line items (if more than one) */}
+            {/* Line items breakdown (read-only) */}
             {result.items?.length > 1 && (
-              <>
-                <div style={{ fontSize: 11, color: C.textTert, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  Line items
-                </div>
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 10, color: C.textTert, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Items on receipt</div>
                 {result.items.map((item, i) => (
                   <div key={i} style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between",
-                    padding: "8px 0",
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "6px 0",
                     borderBottom: i < result.items.length - 1 ? `1px solid ${C.border}` : "none",
                   }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 9, flex: 1 }}>
-                      <span style={{ fontSize: 16 }}>{CATS[item.category]?.icon ?? "💼"}</span>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 500 }}>{item.description}</div>
-                        <div style={{ fontSize: 10, color: C.textSec, marginTop: 1 }}>{item.category}</div>
-                      </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 14 }}>{CATS[item.category]?.icon ?? "💼"}</span>
+                      <span style={{ fontSize: 12 }}>{item.description}</span>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                      <span style={{ ...s.mono, fontSize: 13, fontWeight: 700 }}>
-                        {fmtMoney((item.amount || 0) / 100)}
-                      </span>
-                      <button onClick={() => openAddForItem(item)} style={{ ...s.btn("ghost"), padding: "4px 10px", fontSize: 11 }}>
-                        Add
-                      </button>
-                    </div>
+                    <span style={{ ...s.mono, fontSize: 12, color: C.textSec }}>{fmtMoney((item.amount || 0) / 100)}</span>
                   </div>
                 ))}
-                <div style={{ marginTop: 12 }}>
-                  <button style={{ ...s.btn("primary"), width: "100%" }} onClick={addAll}>
-                    + Add All {result.items.length} Items
-                  </button>
-                </div>
-              </>
+              </div>
             )}
 
-            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <button style={{ ...s.btn("ghost"), width: "100%" }} onClick={resetScan}>Scan Another Receipt</button>
+            <button style={{ ...s.btn("ghost"), width: "100%" }} onClick={resetScan}>
+              Scan Another Receipt
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Results — invoice (total was 0, needs manual add) ── */}
+      {result && !result.error && result.scanMode === "invoice" && !result._autoAdded && (
+        <div style={{ ...s.card }}>
+          <div style={{ fontSize: 13, color: C.textSec, marginBottom: 12 }}>
+            Could not determine the total amount. Review the extracted data below and add manually.
+          </div>
+          {result.items?.map((item, i) => (
+            <div key={i} style={{ ...s.sb, padding: "8px 0", borderBottom: i < result.items.length - 1 ? `1px solid ${C.border}` : "none" }}>
+              <div style={{ fontSize: 13 }}>{item.description}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ ...s.mono, fontSize: 13 }}>{fmtMoney((item.amount || 0) / 100)}</span>
+                <button onClick={() => openAddForItem(item)} style={{ ...s.btn("ghost"), padding: "4px 10px", fontSize: 11 }}>Add</button>
+              </div>
             </div>
+          ))}
+          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <button style={{ ...s.btn("ghost"), flex: 1 }} onClick={resetScan}>Scan Again</button>
           </div>
         </div>
       )}
