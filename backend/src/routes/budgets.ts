@@ -15,7 +15,7 @@ router.get("/", async (c) => {
 
   const { data, error } = await supabase
     .from("budgets")
-    .select("category, limit")
+    .select("category, limit, createdAt, updatedAt")
     .eq("userId", userId);
   if (error) return c.json({ error: error.message }, 500);
 
@@ -29,7 +29,7 @@ router.post("/", async (c) => {
   const { data, error } = await supabase
     .from("budgets")
     .upsert({ userId, category, limit }, { onConflict: "userId,category" })
-    .select("category, limit")
+    .select("category, limit, createdAt, updatedAt")
     .single();
   if (error) return c.json({ error: error.message }, 500);
   await redis?.del(`budgets:${userId}`).catch(() => {});
