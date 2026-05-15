@@ -636,29 +636,35 @@ function AuthScreen({ onAuth }) {
 ════════════════════════════════════════════════════════════════════ */
 
 function Scanner({ onAdd }) {
-  const [mode,      setMode]      = useState("invoice");
-  const [scanning,  setScanning]  = useState(false);
-  const [result,    setResult]    = useState(null);
-  const [showAdd,   setShowAdd]   = useState(false);
-  const [prefill,   setPrefill]   = useState({});
-  const [camStream, setCamStream] = useState(null);
+  const [mode,        setMode]        = useState("invoice");
+  const [scanning,    setScanning]    = useState(false);
+  const [result,      setResult]      = useState(null);
+  const [showAdd,     setShowAdd]     = useState(false);
+  const [prefill,     setPrefill]     = useState({});
+  const [camStream,   setCamStream]   = useState(null);
+  const [capturedUrl, setCapturedUrl] = useState(null); // blob URL of the frozen frame
 
   const fileRef   = useRef(null);
   const videoRef  = useRef(null);
   const canvasRef = useRef(null);
 
-  // Cleanup camera on unmount
+  // Stop camera tracks on unmount
   useEffect(() => () => { if (camStream) camStream.getTracks().forEach(t => t.stop()); }, [camStream]);
 
-  // Set srcObject after the video element renders — can't do it synchronously
-  // in startCam because the <video> is conditionally rendered and doesn't exist yet
+  // Wire srcObject after the <video> element renders (it's conditionally mounted,
+  // so videoRef.current is null at the time setCamStream fires)
   useEffect(() => {
-    if (camStream && videoRef.current) {
-      videoRef.current.srcObject = camStream;
-    }
+    if (camStream && videoRef.current) videoRef.current.srcObject = camStream;
   }, [camStream]);
 
+  // Free object URL when it changes or component unmounts
+  useEffect(() => {
+    return () => { if (capturedUrl) URL.revokeObjectURL(capturedUrl); };
+  }, [capturedUrl]);
+
   const startCam = async () => {
+    setResult(null);
+    if (capturedUrl) { URL.revokeObjectURL(capturedUrl); setCapturedUrl(null); }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -673,26 +679,48 @@ function Scanner({ onAdd }) {
     if (camStream) { camStream.getTracks().forEach(t => t.stop()); setCamStream(null); }
   };
 
+  const resetScan = () => {
+    setResult(null);
+    setScanning(false);
+    if (capturedUrl) { URL.revokeObjectURL(capturedUrl); setCapturedUrl(null); }
+  };
+
   const capture = () => {
     const v = videoRef.current;
     const c = canvasRef.current;
     if (!v || !c) return;
+    // Guard: video hasn't decoded first frame yet — dimensions will be 0
+    if (v.videoWidth === 0 || v.videoHeight === 0) {
+      alert("Camera is still starting up — wait a moment and try again.");
+      return;
+    }
     c.width  = v.videoWidth;
     c.height = v.videoHeight;
     c.getContext("2d").drawImage(v, 0, 0);
-    c.toBlob(blob => { stopCam(); analyzeImage(blob, mode); }, "image/jpeg", 0.92);
+    c.toBlob(blob => {
+      // Freeze the frame so the user can see what Claude is reading
+      const url = URL.createObjectURL(blob);
+      setCapturedUrl(url);
+      stopCam();
+      analyzeImage(blob, mode);
+    }, "image/jpeg", 0.92);
   };
 
   const handleFile = async e => {
     const file = e.target.files[0];
     if (!file) return;
-    setResult(null);
+    resetScan();
+    // Show a preview of the uploaded file too
+    const url = URL.createObjectURL(file);
+    setCapturedUrl(url);
     await analyzeImage(file, mode);
     e.target.value = "";
   };
 
   const analyzeImage = async (blob, scanMode) => {
     setScanning(true);
+    setResult(null);
+
     const b64 = await new Promise(res => {
       const r = new FileReader();
       r.onload = () => res(r.result.split(",")[1]);
@@ -700,26 +728,49 @@ function Scanner({ onAdd }) {
     });
     const mtype = blob.type || "image/jpeg";
 
-    const prompt = scanMode === "barcode"
-      ? `Analyze this barcode/product image. Identify the product. Respond ONLY with valid JSON (no markdown): {"description":"product name","amount":0,"category":"Food/Transport/Shopping/Entertainment/Utilities/Health/Education/Other","confidence":"high/medium/low","notes":""}. Amount in Naira as a number (0 if unknown).`
-      : `Analyze this receipt/invoice image. Extract all line items. Respond ONLY with valid JSON (no markdown): {"merchant":"store name","date":"YYYY-MM-DD","total":0,"items":[{"description":"item","amount":0,"category":"Food/Transport/Shopping/Entertainment/Utilities/Health/Education/Other"}],"notes":""}. All amounts in KOBO (Naira × 100). Use today ${todayStr()} if date not visible.`;
+    const invoicePrompt = `You are a receipt OCR engine. Study every visible character in this receipt or invoice photo.
+Extract the merchant name, transaction date, and every line item with its price.
+If only a grand total is visible (no individual lines), return it as a single item.
+
+Respond with ONLY a raw JSON object — no markdown, no code fences, no explanation:
+{"merchant":"","date":"","total":0,"items":[{"description":"","amount":0,"category":""}]}
+
+Rules (read carefully):
+- "total" and every "amount" must be integers in KOBO = Naira × 100. Example: ₦400 → 40000, NGN 1,500 → 150000.
+- "date" must be YYYY-MM-DD. Use "${todayStr()}" if the date is not visible.
+- "category" must be exactly one of: Food, Transport, Shopping, Entertainment, Utilities, Health, Education, Other.
+- Grocery/supermarket/food items → Food. Petrol/taxi/bus → Transport. Pharmacy/hospital → Health.
+- If you are uncertain about a value, make your best guess — do not leave amounts as 0 unless the price is genuinely absent.`;
+
+    const barcodePrompt = `You are a product identifier. Look at this product or barcode image and identify what it is.
+Respond with ONLY a raw JSON object — no markdown, no code fences, no explanation:
+{"description":"","amount":0,"category":"","confidence":"high/medium/low","notes":""}
+
+Rules:
+- "amount" is the product price in Naira as an integer (0 if not visible).
+- "category" must be exactly one of: Food, Transport, Shopping, Entertainment, Utilities, Health, Education, Other.`;
 
     try {
-      const data  = await api.claude.message({
-        max_tokens: 800,
+      const data = await api.claude.message({
+        model:      "claude-opus-4-7",
+        max_tokens: 1024,
         messages: [{
           role: "user",
           content: [
             { type: "image", source: { type: "base64", media_type: mtype, data: b64 } },
-            { type: "text",  text: prompt },
+            { type: "text",  text: scanMode === "barcode" ? barcodePrompt : invoicePrompt },
           ],
         }],
       });
-      const text  = data.content?.find(c => c.type === "text")?.text || "{}";
-      const clean = text.replace(/```json|```/g, "").trim();
-      setResult({ ...JSON.parse(clean), scanMode });
-    } catch {
-      setResult({ error: "Could not analyze image. Try a clearer photo and check your internet connection." });
+
+      const raw   = data.content?.find(c => c.type === "text")?.text ?? "{}";
+      // Strip any accidental markdown fences Claude may still add
+      const clean = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+      const parsed = JSON.parse(clean);
+      setResult({ ...parsed, scanMode });
+    } catch (e) {
+      console.error("Scanner analysis error:", e);
+      setResult({ error: "Could not read the image. Try again with better lighting and hold the camera steady." });
     }
     setScanning(false);
   };
@@ -747,25 +798,42 @@ function Scanner({ onAdd }) {
         type: ESSENTIAL_CATS.includes(item.category) ? "essential" : "discretionary",
       });
     });
-    setResult(null);
+    resetScan();
   };
+
+  // Corner bracket helper for the receipt framing guide
+  const Corner = ({ top, right, bottom, left }) => (
+    <div style={{
+      position: "absolute",
+      top, right, bottom, left,
+      width: 22, height: 22,
+      borderTop:    top    != null ? "3px solid rgba(255,255,255,0.85)" : "none",
+      borderRight:  right  != null ? "3px solid rgba(255,255,255,0.85)" : "none",
+      borderBottom: bottom != null ? "3px solid rgba(255,255,255,0.85)" : "none",
+      borderLeft:   left   != null ? "3px solid rgba(255,255,255,0.85)" : "none",
+      borderRadius:
+        top != null && left  != null ? "3px 0 0 0" :
+        top != null && right != null ? "0 3px 0 0" :
+        bottom != null && left  != null ? "0 0 0 3px" : "0 0 3px 0",
+    }} />
+  );
 
   return (
     <div>
       <PageTitle
         title="Scan & Capture"
-        sub="Photograph a receipt or scan a barcode — Claude auto-extracts all expense details"
+        sub="Photograph a receipt or scan a barcode — Claude reads every line item automatically"
       />
 
       {/* Mode toggle */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 22 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
         {[
           { id: "invoice", label: "📄  Receipt / Invoice" },
           { id: "barcode", label: "▣  Barcode Scan" },
         ].map(m => (
           <button
             key={m.id}
-            onClick={() => { setMode(m.id); setResult(null); stopCam(); }}
+            onClick={() => { setMode(m.id); resetScan(); stopCam(); }}
             style={s.btn(mode === m.id ? "primary" : "ghost")}
           >
             {m.label}
@@ -773,8 +841,8 @@ function Scanner({ onAdd }) {
         ))}
       </div>
 
-      {/* ── No-camera idle state ── */}
-      {!camStream && (
+      {/* ── Idle: no camera, no captured image ── */}
+      {!camStream && !capturedUrl && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           {mode === "invoice" ? (
             <>
@@ -785,111 +853,222 @@ function Scanner({ onAdd }) {
               >
                 <div style={{ fontSize: 36, marginBottom: 8 }}>📄</div>
                 <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-                  Drop receipt image here or choose a file
+                  Drop a receipt photo here or choose a file
                 </div>
-                <div style={{ fontSize: 12, color: C.textSec }}>JPG / PNG — Claude extracts every line item</div>
+                <div style={{ fontSize: 12, color: C.textSec }}>JPG / PNG — Claude reads every character</div>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
                 <button style={{ ...s.btn("primary"), flex: 1 }} onClick={startCam}>📷  Use Camera</button>
-                <button style={{ ...s.btn("outline"), flex: 1 }} onClick={e => { e.stopPropagation(); fileRef.current?.click(); }}>Choose File</button>
+                <button style={{ ...s.btn("outline"), flex: 1 }} onClick={() => fileRef.current?.click()}>Choose File</button>
               </div>
             </>
           ) : (
-            <>
-              <div style={{ textAlign: "center", padding: "32px 20px" }}>
-                <div style={{ fontSize: 36, marginBottom: 8 }}>▣</div>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Point camera at a product barcode</div>
-                <div style={{ fontSize: 12, color: C.textSec, marginBottom: 18 }}>Claude identifies the product and pre-fills the expense form</div>
-                <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-                  <button style={s.btn("primary")} onClick={startCam}>Open Camera</button>
-                  <button style={s.btn("ghost")}   onClick={() => fileRef.current?.click()}>Upload Image</button>
-                </div>
+            <div style={{ textAlign: "center", padding: "32px 20px" }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>▣</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Point camera at a product barcode</div>
+              <div style={{ fontSize: 12, color: C.textSec, marginBottom: 18 }}>Claude identifies the product and pre-fills the expense form</div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+                <button style={s.btn("primary")} onClick={startCam}>Open Camera</button>
+                <button style={s.btn("ghost")}   onClick={() => fileRef.current?.click()}>Upload Image</button>
               </div>
-            </>
+            </div>
           )}
           <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
         </div>
       )}
 
-      {/* ── Live camera view (both modes) ── */}
+      {/* ── Live camera view ── */}
       {camStream && (
         <div style={{ ...s.card, marginBottom: 20 }}>
-          <div style={{ fontSize: 12, color: C.textSec, marginBottom: 10, fontWeight: 500 }}>
-            {mode === "invoice" ? "📄 Position the receipt in frame, then capture" : "▣ Point at the barcode, then capture"}
+          <div style={{ fontSize: 12, color: C.textSec, marginBottom: 8, fontWeight: 500 }}>
+            {mode === "invoice" ? "Fit the receipt inside the frame, then tap Capture" : "Point at the barcode, then tap Capture"}
           </div>
           <div style={{ position: "relative", borderRadius: 10, overflow: "hidden", background: "#000" }}>
-            <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", display: "block", maxHeight: 460, objectFit: "cover" }} />
-            <div style={{ position: "absolute", inset: 0, border: `2px solid ${C.borderHi}`, borderRadius: 10, pointerEvents: "none" }} />
+            <video
+              ref={videoRef}
+              autoPlay playsInline muted
+              style={{ width: "100%", display: "block", maxHeight: 440, objectFit: "cover" }}
+            />
+            {/* Receipt framing guide */}
+            <div style={{ position: "absolute", inset: "6% 7%", pointerEvents: "none" }}>
+              <Corner top={0}    left={0}  />
+              <Corner top={0}    right={0} />
+              <Corner bottom={0} left={0}  />
+              <Corner bottom={0} right={0} />
+            </div>
+            {/* Scan sweep line */}
+            <div style={{
+              position: "absolute", left: "7%", right: "7%", height: 2,
+              background: "linear-gradient(90deg,transparent,rgba(255,255,255,0.7),transparent)",
+              animation: "scan 2s ease-in-out infinite",
+              top: "50%",
+              pointerEvents: "none",
+            }} />
           </div>
           <canvas ref={canvasRef} style={{ display: "none" }} />
-          <div style={{ height: 2, background: `linear-gradient(90deg,transparent,${C.white},transparent)`, animation: "scan 2s ease-in-out infinite", margin: "10px 0" }} />
-          <div style={{ display: "flex", gap: 10 }}>
-            <button style={{ ...s.btn("ghost"),   flex: 1 }} onClick={() => { stopCam(); setResult(null); }}>Cancel</button>
-            <button style={{ ...s.btn("primary"), flex: 2 }} onClick={capture}>📷  Capture & Analyse</button>
+          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <button style={{ ...s.btn("ghost"),   flex: 1 }} onClick={() => { stopCam(); resetScan(); }}>Cancel</button>
+            <button style={{ ...s.btn("primary"), flex: 2 }} onClick={capture}>📷  Capture</button>
           </div>
         </div>
       )}
 
-      {/* Scanning indicator */}
-      {scanning && (
-        <div style={{ ...s.card, textAlign: "center", padding: "40px 20px" }}>
-          <div style={{ fontSize: 28, marginBottom: 12, animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</div>
-          <div style={{ color: C.textSec, fontSize: 14 }}>Claude is reading your {mode === "invoice" ? "receipt" : "barcode"}…</div>
+      {/* ── Frozen frame + scanning overlay ── */}
+      {capturedUrl && scanning && (
+        <div style={{ ...s.card, marginBottom: 20, padding: 0, overflow: "hidden" }}>
+          <div style={{ position: "relative" }}>
+            <img
+              src={capturedUrl}
+              alt="Captured"
+              style={{ width: "100%", display: "block", maxHeight: 440, objectFit: "contain", background: "#000", opacity: 0.55 }}
+            />
+            {/* Animated sweep over the captured photo */}
+            <div style={{
+              position: "absolute", left: 0, right: 0, height: 3,
+              background: "linear-gradient(90deg,transparent,rgba(255,255,255,0.9),transparent)",
+              animation: "scan 1.4s ease-in-out infinite",
+              top: "40%",
+              pointerEvents: "none",
+            }} />
+            <div style={{
+              position: "absolute", inset: 0,
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              gap: 10,
+            }}>
+              <div style={{ fontSize: 30, animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</div>
+              <div style={{ color: C.white, fontWeight: 600, fontSize: 14 }}>
+                Reading {mode === "invoice" ? "receipt" : "barcode"}…
+              </div>
+              <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 12 }}>Claude is extracting all values</div>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Results — invoice */}
-      {result && !result.error && result.scanMode === "invoice" && result.items && (
-        <div style={s.card}>
-          <div style={{ ...s.sb, marginBottom: 16 }}>
-            <div style={s.h3}>Items Extracted</div>
-            {result.merchant && <span style={{ fontSize: 13, fontWeight: 600 }}>{result.merchant}</span>}
-          </div>
-          {result.items.map((item, i) => (
-            <div key={i} style={{ ...s.sb, padding: "10px 0", borderBottom: i < result.items.length - 1 ? `1px solid ${C.border}` : "none" }}>
-              <div style={s.row}>
-                <span style={{ fontSize: 16 }}>{CATS[item.category]?.icon}</span>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>{item.description}</div>
-                  <div style={{ fontSize: 11, color: C.textSec }}>{item.category}</div>
+      {/* ── Results — invoice ── */}
+      {result && !result.error && result.scanMode === "invoice" && (
+        <div>
+          {/* Captured image thumbnail with "Detected" badge */}
+          {capturedUrl && (
+            <div style={{ position: "relative", marginBottom: 12, borderRadius: 10, overflow: "hidden" }}>
+              <img
+                src={capturedUrl}
+                alt="Scanned receipt"
+                style={{ width: "100%", display: "block", maxHeight: 220, objectFit: "contain", background: "#000" }}
+              />
+              <div style={{
+                position: "absolute", top: 10, left: 10,
+                background: "rgba(0,0,0,0.75)", border: `1px solid ${C.borderMed}`,
+                borderRadius: 6, padding: "4px 10px", fontSize: 11, color: C.white, fontWeight: 600,
+              }}>
+                ✓ Text detected
+              </div>
+            </div>
+          )}
+          <div style={{ ...s.card, marginBottom: 8 }}>
+            <div style={{ ...s.sb, marginBottom: 14 }}>
+              <div>
+                <div style={s.h3}>{result.merchant || "Receipt"}</div>
+                {result.date && <div style={{ fontSize: 11, color: C.textSec, marginTop: 2 }}>{fmtDate(result.date)}</div>}
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ ...s.mono, fontSize: 18, fontWeight: 700 }}>{fmtMoney((result.total || 0) / 100)}</div>
+                <div style={{ fontSize: 10, color: C.textSec }}>total</div>
+              </div>
+            </div>
+
+            {result.items?.map((item, i) => (
+              <div key={i} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "9px 0",
+                borderBottom: i < result.items.length - 1 ? `1px solid ${C.border}` : "none",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
+                  <span style={{ fontSize: 18 }}>{CATS[item.category]?.icon ?? "💼"}</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{item.description}</div>
+                    <div style={{
+                      display: "inline-block", marginTop: 3,
+                      fontSize: 10, fontWeight: 600, padding: "1px 7px",
+                      border: `1px solid ${C.border}`, borderRadius: 20,
+                      color: C.textSec,
+                    }}>
+                      {item.category}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                  <span style={{ ...s.mono, fontSize: 13, fontWeight: 700, color: C.white }}>
+                    {fmtMoney((item.amount || 0) / 100)}
+                  </span>
+                  <button onClick={() => openAddForItem(item)} style={{ ...s.btn("ghost"), padding: "4px 10px", fontSize: 11 }}>
+                    Add
+                  </button>
                 </div>
               </div>
-              <div style={s.row}>
-                <span style={{ ...s.mono, fontSize: 13, fontWeight: 600 }}>{fmtMoney(item.amount / 100)}</span>
-                <button onClick={() => openAddForItem(item)} style={{ ...s.btn("ghost"), padding: "5px 10px", fontSize: 11 }}>Add</button>
+            ))}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+              <button style={{ ...s.btn("ghost"), flex: 1 }} onClick={resetScan}>Scan Again</button>
+              {result.items?.length > 0 && (
+                <button style={{ ...s.btn("primary"), flex: 2 }} onClick={addAll}>
+                  + Add All {result.items.length} Item{result.items.length !== 1 ? "s" : ""}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Results — barcode ── */}
+      {result && !result.error && result.scanMode === "barcode" && (
+        <div>
+          {capturedUrl && (
+            <div style={{ position: "relative", marginBottom: 12, borderRadius: 10, overflow: "hidden" }}>
+              <img src={capturedUrl} alt="Scanned" style={{ width: "100%", display: "block", maxHeight: 180, objectFit: "contain", background: "#000" }} />
+              <div style={{
+                position: "absolute", top: 10, left: 10,
+                background: "rgba(0,0,0,0.75)", border: `1px solid ${C.borderMed}`,
+                borderRadius: 6, padding: "4px 10px", fontSize: 11, color: C.white, fontWeight: 600,
+              }}>
+                ✓ Product identified
               </div>
             </div>
-          ))}
-          <div style={{ ...s.sb, paddingTop: 14, borderTop: `1px solid ${C.border}`, marginTop: 4 }}>
-            <span style={{ fontSize: 13, color: C.textSec }}>
-              Total: <strong style={{ ...s.mono, color: C.white }}>{fmtMoney(result.total / 100)}</strong>
-            </span>
-            <button style={s.btn("primary")} onClick={addAll}>Add All {result.items.length} Items</button>
-          </div>
-        </div>
-      )}
-
-      {/* Results — barcode */}
-      {result && !result.error && result.scanMode === "barcode" && (
-        <div style={s.card}>
-          <div style={s.h3}>Product Identified</div>
-          <div style={{ ...s.row, marginBottom: 16 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 600 }}>{result.description}</div>
-              <div style={{ fontSize: 12, color: C.textSec }}>{result.category} · {result.confidence} confidence</div>
-              {result.notes && <div style={{ fontSize: 12, color: C.textTert, marginTop: 4 }}>{result.notes}</div>}
+          )}
+          <div style={s.card}>
+            <div style={s.h3}>Product Identified</div>
+            <div style={{ ...s.row, marginBottom: 16, marginTop: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>{result.description}</div>
+                <div style={{ fontSize: 12, color: C.textSec, marginTop: 3 }}>
+                  {result.category}
+                  {result.confidence && ` · ${result.confidence} confidence`}
+                </div>
+                {result.notes && <div style={{ fontSize: 12, color: C.textTert, marginTop: 4 }}>{result.notes}</div>}
+              </div>
+              {result.amount > 0 && (
+                <div style={{ ...s.mono, fontSize: 20, fontWeight: 700 }}>{fmtMoney(result.amount)}</div>
+              )}
             </div>
-            {result.amount > 0 && <div style={{ ...s.mono, fontSize: 18, fontWeight: 700 }}>{fmtMoney(result.amount)}</div>}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={{ ...s.btn("ghost"),   flex: 1 }} onClick={resetScan}>Scan Again</button>
+              <button style={{ ...s.btn("primary"), flex: 2 }} onClick={() => openAddForItem(result)}>+ Add as Expense</button>
+            </div>
           </div>
-          <button style={{ ...s.btn("primary"), width: "100%" }} onClick={() => openAddForItem(result)}>
-            + Add as Expense
-          </button>
         </div>
       )}
 
+      {/* ── Error state ── */}
       {result?.error && (
         <div style={{ ...s.card, borderColor: `${C.danger}40` }}>
-          <div style={{ color: C.danger, fontSize: 14 }}>⚠ {result.error}</div>
+          {capturedUrl && (
+            <img src={capturedUrl} alt="Failed capture" style={{ width: "100%", borderRadius: 8, marginBottom: 12, opacity: 0.5, maxHeight: 160, objectFit: "contain", background: "#000" }} />
+          )}
+          <div style={{ color: C.danger, fontSize: 14, marginBottom: 12 }}>⚠ {result.error}</div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={s.btn("ghost")}    onClick={resetScan}>Try Again</button>
+            <button style={s.btn("outline")}  onClick={() => { resetScan(); startCam(); }}>📷 Retake Photo</button>
+          </div>
         </div>
       )}
 
