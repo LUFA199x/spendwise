@@ -728,19 +728,30 @@ function Scanner({ onAdd }) {
     });
     const mtype = blob.type || "image/jpeg";
 
-    const invoicePrompt = `You are a receipt OCR engine. Study every visible character in this receipt or invoice photo.
-Extract the merchant name, transaction date, and every line item with its price.
-If only a grand total is visible (no individual lines), return it as a single item.
+    const invoicePrompt = `You are a receipt OCR engine for a Nigerian expense tracker. Read every character in this receipt or invoice image and extract structured data.
 
-Respond with ONLY a raw JSON object — no markdown, no code fences, no explanation:
+STEP 1 — Find the total amount the customer actually paid:
+  Look for labels in this priority order: "Net Total", "Amount Due", "Grand Total", "Total Amount", "Total".
+  Use the value next to the LAST/BOTTOM occurrence of these labels.
+  ⚠ IGNORE these fields — they are NOT the payment amount:
+    "Customer Credit", "Credit Limit", "Running Balance", "Account Balance", "Outstanding", "Loyalty Points"
+  If the receipt shows separate payment methods (e.g. Cash + Card), sum them — that is the total paid.
+
+STEP 2 — Extract line items (the products/services purchased):
+  List each item with its name and price.
+  If individual items are not readable, create ONE item using the merchant name as description and the total as amount.
+
+Respond with ONLY raw JSON (no markdown, no code fences, no text before or after):
 {"merchant":"","date":"","total":0,"items":[{"description":"","amount":0,"category":""}]}
 
-Rules (read carefully):
-- "total" and every "amount" must be integers in KOBO = Naira × 100. Example: ₦400 → 40000, NGN 1,500 → 150000.
+Conversion rules:
+- Every amount field must be an INTEGER in KOBO = Naira × 100.
+  Examples: NGN 400 → 40000 | ₦1,500 → 150000 | NGN 31,800 → 3180000
 - "date" must be YYYY-MM-DD. Use "${todayStr()}" if the date is not visible.
-- "category" must be exactly one of: Food, Transport, Shopping, Entertainment, Utilities, Health, Education, Other.
-- Grocery/supermarket/food items → Food. Petrol/taxi/bus → Transport. Pharmacy/hospital → Health.
-- If you are uncertain about a value, make your best guess — do not leave amounts as 0 unless the price is genuinely absent.`;
+- "category" must be exactly one word from: Food | Transport | Shopping | Entertainment | Utilities | Health | Education | Other
+  Hints: supermarket/grocery/food items → Food | petrol/fuel/bus/taxi → Transport | pharmacy/hospital → Health
+- NEVER return total:0 if any monetary amount is visible on the receipt.
+- The "total" field and the sum of all items[].amount should match.`;
 
     const barcodePrompt = `You are a product identifier. Look at this product or barcode image and identify what it is.
 Respond with ONLY a raw JSON object — no markdown, no code fences, no explanation:
@@ -764,9 +775,25 @@ Rules:
       });
 
       const raw   = data.content?.find(c => c.type === "text")?.text ?? "{}";
-      // Strip any accidental markdown fences Claude may still add
       const clean = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
       const parsed = JSON.parse(clean);
+
+      // Guarantee at least one item so the UI always has something to add.
+      // Also fix zero-amount items by falling back to total / item count.
+      if (scanMode === "invoice") {
+        if (!parsed.items || parsed.items.length === 0) {
+          parsed.items = [{
+            description: parsed.merchant ? `${parsed.merchant} purchase` : "Receipt purchase",
+            amount:      parsed.total || 0,
+            category:    "Other",
+          }];
+        }
+        // If total is still 0 but items have amounts, derive it
+        if (!parsed.total || parsed.total === 0) {
+          parsed.total = parsed.items.reduce((s, it) => s + (it.amount || 0), 0);
+        }
+      }
+
       setResult({ ...parsed, scanMode });
     } catch (e) {
       console.error("Scanner analysis error:", e);
@@ -948,7 +975,7 @@ Rules:
       {/* ── Results — invoice ── */}
       {result && !result.error && result.scanMode === "invoice" && (
         <div>
-          {/* Captured image thumbnail with "Detected" badge */}
+          {/* Captured image thumbnail */}
           {capturedUrl && (
             <div style={{ position: "relative", marginBottom: 12, borderRadius: 10, overflow: "hidden" }}>
               <img
@@ -958,63 +985,85 @@ Rules:
               />
               <div style={{
                 position: "absolute", top: 10, left: 10,
-                background: "rgba(0,0,0,0.75)", border: `1px solid ${C.borderMed}`,
+                background: "rgba(0,0,0,0.82)", border: `1px solid ${C.borderMed}`,
                 borderRadius: 6, padding: "4px 10px", fontSize: 11, color: C.white, fontWeight: 600,
               }}>
-                ✓ Text detected
+                ✓ Values detected
               </div>
             </div>
           )}
+
           <div style={{ ...s.card, marginBottom: 8 }}>
-            <div style={{ ...s.sb, marginBottom: 14 }}>
-              <div>
-                <div style={s.h3}>{result.merchant || "Receipt"}</div>
-                {result.date && <div style={{ fontSize: 11, color: C.textSec, marginTop: 2 }}>{fmtDate(result.date)}</div>}
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ ...s.mono, fontSize: 18, fontWeight: 700 }}>{fmtMoney((result.total || 0) / 100)}</div>
-                <div style={{ fontSize: 10, color: C.textSec }}>total</div>
-              </div>
+            {/* Header: merchant + date */}
+            <div style={{ ...s.sb, marginBottom: 4 }}>
+              <div style={s.h3}>{result.merchant || "Receipt"}</div>
+              {result.date && <div style={{ fontSize: 11, color: C.textSec }}>{fmtDate(result.date)}</div>}
             </div>
 
-            {result.items?.map((item, i) => (
-              <div key={i} style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "9px 0",
-                borderBottom: i < result.items.length - 1 ? `1px solid ${C.border}` : "none",
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
-                  <span style={{ fontSize: 18 }}>{CATS[item.category]?.icon ?? "💼"}</span>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 500 }}>{item.description}</div>
-                    <div style={{
-                      display: "inline-block", marginTop: 3,
-                      fontSize: 10, fontWeight: 600, padding: "1px 7px",
-                      border: `1px solid ${C.border}`, borderRadius: 20,
-                      color: C.textSec,
-                    }}>
-                      {item.category}
-                    </div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                  <span style={{ ...s.mono, fontSize: 13, fontWeight: 700, color: C.white }}>
-                    {fmtMoney((item.amount || 0) / 100)}
-                  </span>
-                  <button onClick={() => openAddForItem(item)} style={{ ...s.btn("ghost"), padding: "4px 10px", fontSize: 11 }}>
-                    Add
-                  </button>
+            {/* Total debit — hero display */}
+            <div style={{
+              background: C.whiteDim, border: `1px solid ${C.border}`,
+              borderRadius: 10, padding: "14px 16px", marginBottom: 16,
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+              <div>
+                <div style={{ fontSize: 10, color: C.textTert, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>Total debit</div>
+                <div style={{ ...s.mono, fontSize: 26, fontWeight: 800, letterSpacing: "-0.5px" }}>
+                  {fmtMoney((result.total || 0) / 100)}
                 </div>
               </div>
-            ))}
+              {/* One-tap: add entire receipt as a single transaction */}
+              <button
+                style={{ ...s.btn("primary"), fontSize: 12, padding: "8px 14px", whiteSpace: "nowrap" }}
+                onClick={() => openAddForItem({
+                  description: result.merchant ? `${result.merchant} purchase` : "Receipt purchase",
+                  amount:      result.total || 0,
+                  category:    result.items?.[0]?.category || "Other",
+                })}
+              >
+                + Add Total
+              </button>
+            </div>
 
-            <div style={{ display: "flex", gap: 10, marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <button style={{ ...s.btn("ghost"), flex: 1 }} onClick={resetScan}>Scan Again</button>
-              {result.items?.length > 0 && (
-                <button style={{ ...s.btn("primary"), flex: 2 }} onClick={addAll}>
-                  + Add All {result.items.length} Item{result.items.length !== 1 ? "s" : ""}
-                </button>
-              )}
+            {/* Line items (if more than one) */}
+            {result.items?.length > 1 && (
+              <>
+                <div style={{ fontSize: 11, color: C.textTert, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Line items
+                </div>
+                {result.items.map((item, i) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "8px 0",
+                    borderBottom: i < result.items.length - 1 ? `1px solid ${C.border}` : "none",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 9, flex: 1 }}>
+                      <span style={{ fontSize: 16 }}>{CATS[item.category]?.icon ?? "💼"}</span>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{item.description}</div>
+                        <div style={{ fontSize: 10, color: C.textSec, marginTop: 1 }}>{item.category}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                      <span style={{ ...s.mono, fontSize: 13, fontWeight: 700 }}>
+                        {fmtMoney((item.amount || 0) / 100)}
+                      </span>
+                      <button onClick={() => openAddForItem(item)} style={{ ...s.btn("ghost"), padding: "4px 10px", fontSize: 11 }}>
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <div style={{ marginTop: 12 }}>
+                  <button style={{ ...s.btn("primary"), width: "100%" }} onClick={addAll}>
+                    + Add All {result.items.length} Items
+                  </button>
+                </div>
+              </>
+            )}
+
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+              <button style={{ ...s.btn("ghost"), width: "100%" }} onClick={resetScan}>Scan Another Receipt</button>
             </div>
           </div>
         </div>
