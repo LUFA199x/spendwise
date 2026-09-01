@@ -1,8 +1,12 @@
 name: Pre-Merge Checks
 
 on:
+  # Gate every PR into the integration branch and into production.
   pull_request:
-    branches: [main, master]
+    branches: [dev, release]
+  # Also check dev itself, since development lands there directly.
+  push:
+    branches: [dev]
 
 jobs:
   frontend:
