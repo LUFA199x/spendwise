@@ -1,23 +1,12 @@
 import { createMiddleware } from "hono/factory";
 import { auth } from "../auth.js";
-import { redis } from "../redis.js";
+import { sessionCache } from "../session-cache.js";
 
 export type AuthVars = { userId: string };
 
-const SESSION_TTL = 300; // 5 minutes
-
 export const requireAuth = createMiddleware<{ Variables: AuthVars }>(
   async (c, next) => {
-    const authHeader = c.req.header("Authorization")?.replace("Bearer ", "");
-    const cookieHeader = c.req.raw.headers.get("cookie") ?? "";
-    const sessionToken =
-      authHeader ??
-      cookieHeader.split(";").map(s => s.trim()).find(s => s.startsWith("better-auth.session_token="))?.split("=")[1] ??
-      cookieHeader;
-
-    const cacheKey = `session:${sessionToken}`;
-    const cached = await redis?.get<string>(cacheKey).catch(() => null) ?? null;
-
+    const cached = await sessionCache.read(c.req.raw.headers);
     if (cached) {
       c.set("userId", cached);
       return next();
@@ -26,7 +15,7 @@ export const requireAuth = createMiddleware<{ Variables: AuthVars }>(
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    await redis?.set(cacheKey, session.user.id, { ex: SESSION_TTL }).catch(() => {});
+    await sessionCache.write(c.req.raw.headers, session.user.id);
     c.set("userId", session.user.id);
     await next();
   }
