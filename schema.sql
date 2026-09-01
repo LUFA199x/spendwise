@@ -102,3 +102,14 @@ CREATE INDEX IF NOT EXISTS idx_budgets_user      ON "budgets"("userId");
 CREATE INDEX IF NOT EXISTS idx_goals_user        ON "goals"("userId");
 CREATE INDEX IF NOT EXISTS idx_session_user      ON "session"("userId");
 CREATE INDEX IF NOT EXISTS idx_session_token     ON "session"("token");
+
+-- ============================================================
+-- Patches
+-- Applied on top of the CREATE TABLE blocks above, which are
+-- IF NOT EXISTS and therefore inert against an existing database.
+-- ============================================================
+
+-- budgets."updatedAt" is selected by backend/src/routes/budgets.ts but was
+-- never declared here; the live database gained it out of band (see e43d957).
+ALTER TABLE "budgets"
+  ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW();

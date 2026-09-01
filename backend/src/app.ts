@@ -2,7 +2,7 @@ import "dotenv/config";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { auth } from "./auth.js";
-import { redis } from "./redis.js";
+import { sessionCache } from "./session-cache.js";
 import transactionsRouter from "./routes/transactions.js";
 import earningsRouter from "./routes/earnings.js";
 import budgetsRouter from "./routes/budgets.js";
@@ -37,15 +37,9 @@ app.route("/api/claude", claudeRouter);
 
 app.get("/health", (c) => c.json({ ok: true }));
 
-// Invalidate Redis session cache on signout
+// Invalidate the session cache on signout
 app.delete("/api/auth/cache", async (c) => {
-  const authHeader = c.req.header("Authorization")?.replace("Bearer ", "");
-  const cookieHeader = c.req.raw.headers.get("cookie") ?? "";
-  const token =
-    authHeader ??
-    cookieHeader.split(";").map(s => s.trim()).find(s => s.startsWith("better-auth.session_token="))?.split("=")[1] ??
-    cookieHeader;
-  if (token) await redis?.del(`session:${token}`).catch(() => {});
+  await sessionCache.invalidate(c.req.raw.headers);
   return c.json({ ok: true });
 });
 
